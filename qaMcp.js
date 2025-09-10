@@ -28,7 +28,7 @@ server.registerTool(
   async ({ url }) => {
     const p = await initBrowser();
     await p.goto(url);
-    return { content: [{ type: "text", text: `✅ Visited ${url}` }] };
+    return { content: [{ type: "text", text: `Visited ${url}` }] };
   }
 );
 
@@ -45,7 +45,7 @@ server.registerTool(
     const body = await p.content();
     const found = body.includes(text);
     return {
-      content: [{ type: "text", text: found ? `✅ Found: ${text}` : `❌ Not Found: ${text}` }],
+      content: [{ type: "text", text: found ? `✅ Found: ${text}` : `Not Found: ${text}` }],
     };
   }
 );
@@ -72,6 +72,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("❌ Server error:", err);
+  console.error("Server error:", err);
   process.exit(1);
 });
