@@ -137,27 +137,28 @@ server.registerTool(
   async ({ keyword, value }) => {
     const p = await initBrowser();
 
-    // input 선택자 찾기
-    const selector = await p.evaluate((k) => {
-      const el = Array.from(document.querySelectorAll("input, textarea")).find(
+    // 1. input element 찾기 (브라우저 내부)
+    const inputEl = await p.evaluateHandle((k) => {
+      return Array.from(document.querySelectorAll("input, textarea")).find(
         (e) =>
           (e.placeholder && e.placeholder.includes(k)) ||
           (e.labels?.[0]?.innerText.includes(k))
       );
-      return el ? `[data-uid="${el.getAttribute("data-uid") || ""}"]` : null;
     }, keyword);
 
-    if (!selector) {
-      return { content: [{ type: "text", text: `Input not found: ${keyword}` }] };
+    // 2. Puppeteer ElementHandle로 변환
+    const inputHandle = inputEl.asElement();
+
+    if (!inputHandle) {
+      return { content: [{ type: "text", text: `❌ Input not found: ${keyword}` }] };
     }
 
-    // 값 입력 전에 기존 값 지우고 type()으로 입력
-    const inputHandle = await p.$(selector);
-    await inputHandle.click({ clickCount: 3 }); // 기존 값 전체 선택
-    await inputHandle.press("Backspace");       // 지우기
-    await inputHandle.type(value);              // 실제 사람이 타이핑하듯 입력
+    // 3. 사람이 타이핑하듯 입력
+    await inputHandle.click({ clickCount: 3 });
+    await inputHandle.press("Backspace");
+    await inputHandle.type(value);
 
-    return { content: [{ type: "text", text: `Typed into ${keyword}` }] };
+    return { content: [{ type: "text", text: `✍️ Typed into ${keyword}` }] };
   }
 );
 
@@ -174,7 +175,7 @@ server.registerTool(
     const p = await initBrowser();
     const body = await p.content();
     return {
-      content: [{ type: "text", text: body.includes(text) ? `✅ Found: ${text}` : `❌ Not Found: ${text}` }],
+      content: [{ type: "text", text: body.includes(text) ? `Found: ${text}` : ` Not Found: ${text}` }],
     };
   }
 );
@@ -188,7 +189,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    return { content: [{ type: "json", data: networkLogs }] };
+    return { content: [{ type: "text", text: JSON.stringify(networkLogs, null, 2) }] };
   }
 );
 
@@ -203,8 +204,8 @@ server.registerTool(
   async ({ keyword }) => {
     const found = networkLogs.filter((log) => log.url.includes(keyword));
     return found.length
-      ? { content: [{ type: "json", data: found }] }
-      : { content: [{ type: "text", text: `❌ No request found for ${keyword}` }] };
+      ? { content: [{ type: "text", text: JSON.stringify(networkLogs, null, 2) }] }
+      : { content: [{ type: "text", text: `No request found for ${keyword}` }] };
   }
 );
 
