@@ -125,7 +125,8 @@ server.registerTool(
   }
 );
 
-// 폼 입력
+
+// 폼 입력 
 server.registerTool(
   "fill_form",
   {
@@ -135,22 +136,31 @@ server.registerTool(
   },
   async ({ keyword, value }) => {
     const p = await initBrowser();
-    const filled = await p.evaluate((k, v) => {
+
+    // input 선택자 찾기
+    const selector = await p.evaluate((k) => {
       const el = Array.from(document.querySelectorAll("input, textarea")).find(
         (e) =>
           (e.placeholder && e.placeholder.includes(k)) ||
           (e.labels?.[0]?.innerText.includes(k))
       );
-      if (el) {
-        el.value = v;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        return true;
-      }
-      return false;
-    }, keyword, value);
-    return { content: [{ type: "text", text: filled ? `✍️ Filled ${keyword}` : `❌ Input not found: ${keyword}` }] };
+      return el ? `[data-uid="${el.getAttribute("data-uid") || ""}"]` : null;
+    }, keyword);
+
+    if (!selector) {
+      return { content: [{ type: "text", text: `Input not found: ${keyword}` }] };
+    }
+
+    // 값 입력 전에 기존 값 지우고 type()으로 입력
+    const inputHandle = await p.$(selector);
+    await inputHandle.click({ clickCount: 3 }); // 기존 값 전체 선택
+    await inputHandle.press("Backspace");       // 지우기
+    await inputHandle.type(value);              // 실제 사람이 타이핑하듯 입력
+
+    return { content: [{ type: "text", text: `Typed into ${keyword}` }] };
   }
 );
+
 
 // 텍스트 검증
 server.registerTool(
