@@ -4,20 +4,59 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import puppeteer from "puppeteer";
 import { z } from "zod";
 
-const server = new McpServer({ name: "qa-mcp-server", version: "0.1.0" });
+const server = new McpServer({ name: "qa-mcp-server", version: "0.4.0" });
 
-let browser, page;
+let browser = null;
+let page = null;
+let networkLogs = []; // 네트워크 요청 기록 저장
 
-// 브라우저 열기
+// 브라우저 초기화
 async function initBrowser() {
-  if (!browser) {
-    browser = await puppeteer.launch({ headless: true });
-    page = await browser.newPage();
+  try {
+    // 브라우저가 없거나 죽었을 때 다시 실행
+    if (!browser || !browser.isConnected()) {
+      if (browser) await browser.close();
+      browser = await puppeteer.launch({
+        headless: false, // 안정성을 위해 기본값 headless
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+    }
+
+    // 페이지가 없거나 닫혔을 때 새로 열기
+    if (!page || page.isClosed()) {
+      page = await browser.newPage();
+
+      // 네트워크 응답 기록
+      page.on("response", async (res) => {
+        const url = res.url();
+        const status = res.status();
+        if (!url.startsWith("http")) return;
+
+        let body = null;
+        try {
+          body = await res.json();
+        } catch {
+          try {
+            body = await res.text();
+          } catch {
+            body = null;
+          }
+        }
+
+        networkLogs.push({ url, status, body, time: new Date().toISOString() });
+      });
+    }
+
+    return page;
+  } catch (err) {
+    console.error("initBrowser error:", err);
+    browser = null;
+    page = null;
+    throw err;
   }
-  return page;
 }
 
-// 툴 1: 페이지 방문
+// 페이지 방문
 server.registerTool(
   "visit_page",
   {
@@ -27,12 +66,93 @@ server.registerTool(
   },
   async ({ url }) => {
     const p = await initBrowser();
-    await p.goto(url);
-    return { content: [{ type: "text", text: `Visited ${url}` }] };
+    try {
+      await p.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+      return { content: [{ type: "text", text: `✅ Visited ${url}` }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `❌ Visit failed: ${err.message}` }] };
+    }
   }
 );
 
-// 툴 2: 텍스트 검증
+// 요소 목록 가져오기
+server.registerTool(
+  "list_elements",
+  {
+    title: "List clickable and input elements",
+    description: "버튼, 링크, input 등 상호작용 가능한 요소들을 확인",
+    inputSchema: {},
+  },
+  async () => {
+    const p = await initBrowser();
+    const elements = await p.evaluate(() =>
+      Array.from(document.querySelectorAll("a, button, input, textarea")).map((el) => ({
+        tag: el.tagName.toLowerCase(),
+        type: el.getAttribute("type") || null,
+        placeholder: el.getAttribute("placeholder") || null,
+        text: el.innerText || el.value || null,
+      }))
+    );
+    return { content: [{ type: "text", text: JSON.stringify(elements, null, 2) }] };
+
+  }
+);
+
+// 버튼/링크 클릭
+server.registerTool(
+  "click_element",
+  {
+    title: "Click element by text or type",
+    description: "버튼이나 링크 텍스트 또는 type 속성으로 요소 클릭",
+    inputSchema: { keyword: z.string() },
+  },
+  async ({ keyword }) => {
+    const p = await initBrowser();
+    const clicked = await p.evaluate((k) => {
+      const els = Array.from(document.querySelectorAll("a, button, input[type=submit]"));
+      const el = els.find(
+        (e) =>
+          (e.innerText && e.innerText.includes(k)) ||
+          (e.type && e.type === k)
+      );
+      if (el) {
+        el.click();
+        return true;
+      }
+      return false;
+    }, keyword);
+    return { content: [{ type: "text", text: clicked ? `✅ Clicked ${keyword}` : `❌ Not Found: ${keyword}` }] };
+  }
+);
+
+// 폼 입력
+server.registerTool(
+  "fill_form",
+  {
+    title: "Fill input by placeholder or label",
+    description: "placeholder 또는 label 텍스트로 input 찾기 후 값 입력",
+    inputSchema: { keyword: z.string(), value: z.string() },
+  },
+  async ({ keyword, value }) => {
+    const p = await initBrowser();
+    const filled = await p.evaluate((k, v) => {
+      const el = Array.from(document.querySelectorAll("input, textarea")).find(
+        (e) =>
+          (e.placeholder && e.placeholder.includes(k)) ||
+          (e.labels?.[0]?.innerText.includes(k))
+      );
+      if (el) {
+        el.value = v;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      }
+      return false;
+    }, keyword, value);
+    return { content: [{ type: "text", text: filled ? `✍️ Filled ${keyword}` : `❌ Input not found: ${keyword}` }] };
+  }
+);
+
+// 텍스트 검증
 server.registerTool(
   "assert_text",
   {
@@ -43,34 +163,46 @@ server.registerTool(
   async ({ text }) => {
     const p = await initBrowser();
     const body = await p.content();
-    const found = body.includes(text);
     return {
-      content: [{ type: "text", text: found ? `✅ Found: ${text}` : `Not Found: ${text}` }],
+      content: [{ type: "text", text: body.includes(text) ? `✅ Found: ${text}` : `❌ Not Found: ${text}` }],
     };
   }
 );
 
-// 툴 3: 폼 입력
+// 네트워크 로그 반환
 server.registerTool(
-  "fill_form",
+  "get_network_logs",
   {
-    title: "Fill form input",
-    description: "폼 입력창에 값 채우기",
-    inputSchema: { selector: z.string(), value: z.string() },
+    title: "Get captured network logs",
+    description: "지금까지 기록된 네트워크 요청/응답 반환",
+    inputSchema: {},
   },
-  async ({ selector, value }) => {
-    const p = await initBrowser();
-    await p.type(selector, value);
-    return { content: [{ type: "text", text: `✍️ Filled ${selector} with ${value}` }] };
+  async () => {
+    return { content: [{ type: "json", data: networkLogs }] };
   }
 );
 
-// MCP 서버 실행
+// 특정 키워드 네트워크 요청 확인
+server.registerTool(
+  "check_network_request",
+  {
+    title: "Check network request",
+    description: "특정 키워드가 포함된 네트워크 요청을 검색",
+    inputSchema: { keyword: z.string() },
+  },
+  async ({ keyword }) => {
+    const found = networkLogs.filter((log) => log.url.includes(keyword));
+    return found.length
+      ? { content: [{ type: "json", data: found }] }
+      : { content: [{ type: "text", text: `❌ No request found for ${keyword}` }] };
+  }
+);
+
+// 실행
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
-
 main().catch((err) => {
   console.error("Server error:", err);
   process.exit(1);
